@@ -1,31 +1,115 @@
-provider "aws" {
+ provider "aws" {
+  region = "us-east-1"
+}
 
-  }
-  variable "subnet_cidr_block" {
-    description = "sunnet cidr block"
-    
-  }
-  variable "avail_zone" {
-    
-  }
-  variable "vpc_cidr_block" {
-    description = "vpc cidr block"
+variable vpc_cidr_block {}
+variable subnet_cidr_block {}
+variable env_prefix {}
+variable my_ip {}
+variable avail_zone {}
+variable "instance_type" {}
 
-    
+resource "aws_vpc" "myapp-vpc" {
+  cidr_block = var.vpc_cidr_block
+  tags = {
+    "Name" = "${var.env_prefix}-vpc"
   }
-  resource "aws_vpc" "dev-vpc" {
-    cidr_block = var.vpc_cidr_block
-    tags = {
-      "Name" = "dev"
-    }
-    
-  }
-  resource "aws_subnet" "public-sub" {
-    vpc_id = aws_vpc.dev-vpc.id  
-    cidr_block = var.subnet_cidr_block
-    availability_zone = var.avail_zone
-    tags = {
-      "Name" = "public-dev"
-    }
+}
 
+resource "aws_subnet" "myapp-sub-1" {
+  vpc_id = aws_vpc.myapp-vpc.id
+  cidr_block = var.subnet_cidr_block
+  availability_zone = var.avail_zone
+  tags = {
+    "Name" = "${var.env_prefix}-subnet"
   }
+}
+
+resource "aws_route_table" "myapp-route" {
+  vpc_id = aws_vpc.myapp-vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.myapp-igw.id
+  }
+  tags = {
+    "Name" = "${var.env_prefix}-rtb"
+  }
+}
+
+resource "aws_internet_gateway" "myapp-igw" {
+  vpc_id = aws_vpc.myapp-vpc.id
+  tags = {
+    "Name" = "${var.env_prefix}-igw"
+  }
+}
+
+resource "aws_route_table_association" "a-rtb-subnet" {
+  subnet_id = aws_subnet.myapp-sub-1.id
+  route_table_id = aws_route_table.myapp-route.id
+}
+
+resource "aws_security_group" "myapp-sg" {
+  name = "myapp-sg"
+  vpc_id = aws_vpc.myapp-vpc.id
+
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = [var.my_ip]
+  }
+  ingress {
+    from_port = 8080
+    to_port = 8080
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    prefix_list_ids = []
+  }
+  tags = {
+    "Name" = "${var.env_prefix}-sg"
+  }
+}
+
+data "aws_ami" "latest-amazon-linux-image" {
+  most_recent = true
+  owners = ["amazon"]
+  filter {
+    name = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+  filter {
+    name = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+output "aws_ami_id" {
+  value = data.aws_ami.latest-amazon-linux-image.id
+}
+resource "aws_instance" "myapp-server" {
+  ami = data.aws_ami.latest-amazon-linux-image.id
+  instance_type = var.instance_type
+  subnet_id = aws_subnet.myapp-sub-1.id
+  vpc_security_group_ids = [aws_security_group.myapp-sg.id]
+  availability_zone = var.avail_zone
+  associate_public_ip_address = true
+  key_name = "terra-key"
+  user_data = <<EOF
+                  #!/bin/bash
+                  sudo yum update -y && sudo yum install docker -y
+                  sudo systemctl start docker
+                  sudo usermode -aG docker ec2-user
+                  docker run -p 8080:80 nginx
+  
+                EOF
+  tags = {
+    Name = "${var.env_prefix}-server"
+  }
+  
+}
